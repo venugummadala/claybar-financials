@@ -1,0 +1,13 @@
+{
+  "name": "claybar-workflow",
+  "version": "1.0.0",
+  "description": "Skills for building production-grade workflow orchestration with Camunda 7 (BPMN/DMN) and event-driven Spring Boot microservices on Kafka: extend processes, scaffold services, and review for production readiness.",
+  "author": {
+    "name": "venugummadala",
+    "url": "https://github.com/venugummadala"
+  },
+  "homepage": "https://github.com/venugummadala/claybar-financials/tree/main/plugins/claybar-workflow",
+  "repository": "https://github.com/venugummadala/claybar-financials",
+  "license": "Apache-2.0",
+  "keywords": ["camunda", "bpmn", "dmn", "kafka", "spring-boot", "workflow", "orchestration", "event-driven", "microservices"]
+}

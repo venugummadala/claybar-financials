@@ -1,0 +1,22 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<bpmn:definitions xmlns:bpmn="http://www.omg.org/spec/BPMN/20100524/MODEL"
+                  xmlns:camunda="http://camunda.org/schema/1.0/bpmn"
+                  id="Definitions_OrderApproval" targetNamespace="https://example.com/bpmn">
+  <bpmn:message id="Msg_CreditApproved" name="CreditApproved" />
+  <bpmn:process id="order-approval" isExecutable="true" camunda:historyTimeToLive="P30D">
+    <bpmn:startEvent id="Start" />
+    <bpmn:sequenceFlow id="F1" sourceRef="Start" targetRef="Task_RequestCredit" />
+    <bpmn:sendTask id="Task_RequestCredit" camunda:delegateExpression="${kafkaCommandDelegate}">
+      <bpmn:extensionElements>
+        <camunda:inputOutput>
+          <camunda:inputParameter name="topic">orders.credit.commands</camunda:inputParameter>
+          <camunda:inputParameter name="eventType">CreditApprovalRequested</camunda:inputParameter>
+        </camunda:inputOutput>
+      </bpmn:extensionElements>
+    </bpmn:sendTask>
+    <bpmn:sequenceFlow id="F2" sourceRef="Task_RequestCredit" targetRef="Task_AwaitCredit" />
+    <bpmn:receiveTask id="Task_AwaitCredit" messageRef="Msg_CreditApproved" />
+    <bpmn:sequenceFlow id="F3" sourceRef="Task_AwaitCredit" targetRef="End" />
+    <bpmn:endEvent id="End" />
+  </bpmn:process>
+</bpmn:definitions>

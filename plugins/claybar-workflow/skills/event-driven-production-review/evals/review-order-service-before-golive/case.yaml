@@ -1,0 +1,6 @@
+schema_version: "1.1"
+name: review-order-service-before-golive
+expected_outcome: |
+  A severity-ranked review that identifies the self-invocation transaction bug as the cause of the stale PENDING status, the invalid @Scheduled duration, the fire-and-forget outbox send and missing stop-on-failure, the send task without asyncBefore and the receive task without a timer, each with a failure scenario and fix.
+context:
+  scaffold_script: place-files.sh

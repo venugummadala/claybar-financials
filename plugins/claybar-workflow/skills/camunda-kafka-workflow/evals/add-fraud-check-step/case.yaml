@@ -1,0 +1,6 @@
+schema_version: "1.1"
+name: add-fraud-check-step
+expected_outcome: |
+  The loan-origination BPMN gains a parallel fraud branch built from the plug-in's request/reply pattern (async send task, async-after receive task named after the reply event, configurable interrupting timer with a timeout handler, XOR merge before the join), the DMN rejects fraud scores of 80 or more, event types/topics/inbound-topics/SLA config are updated, the diagram stays valid, and process + DMN tests cover the new path.
+context:
+  scaffold_script: place-files.sh

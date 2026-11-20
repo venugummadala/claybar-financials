@@ -1,0 +1,6 @@
+schema_version: "1.1"
+name: scaffold-fraud-service
+expected_outcome: |
+  A new services/fraud-service module following the repo's conventions: registered in the parent POM, topics and event types added to the shared library, a listener that decodes safely, filters by type, dead-letters invalid input, replies with causedBy + publishAndWait, a vendor port with a deterministic simulator, unit + embedded-Kafka tests (including DLT), and compose/CI wiring.
+context:
+  scaffold_script: place-files.sh

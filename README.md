@@ -41,6 +41,17 @@ flowchart LR
 
 [Architecture docs](docs/architecture/README.md): business flows, C4 model, 4+1 views and low-level design, all with diagrams. Decisions are in [docs/adr](docs/adr).
 
+## Claude Code plugin
+
+The patterns in this repo are also packaged as a Claude Code plugin with three skills: extending Camunda + Kafka
+workflows, scaffolding event-driven services, and production-readiness review. See
+[plugins/claybar-workflow](plugins/claybar-workflow/README.md).
+
+```text
+/plugin marketplace add venugummadala/claybar-financials
+/plugin install claybar-workflow@claybar
+```
+
 ## The process
 
 `services/orchestrator-service/src/main/resources/bpmn/loan-origination.bpmn` (open it in Camunda Modeler, or see it live with instance counts in Cockpit → Processes → Loan origination):

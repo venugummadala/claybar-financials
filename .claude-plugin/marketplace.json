@@ -1,0 +1,20 @@
+{
+  "name": "claybar",
+  "owner": {
+    "name": "venugummadala",
+    "url": "https://github.com/venugummadala"
+  },
+  "metadata": {
+    "description": "Claude Code plugins from the Claybar Financials reference architecture."
+  },
+  "plugins": [
+    {
+      "name": "claybar-workflow",
+      "source": "./plugins/claybar-workflow",
+      "description": "Camunda 7 + Kafka orchestration, event-driven Spring Boot service scaffolding, and production-readiness review.",
+      "version": "1.0.0",
+      "category": "development",
+      "keywords": ["camunda", "kafka", "spring-boot", "bpmn", "event-driven"]
+    }
+  ]
+}

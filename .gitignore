@@ -5,3 +5,6 @@ target/
 .DS_Store
 *.log
 camunda-h2-database*
+
+# skill eval workspaces
+plugins/claybar-workflow/skills/*-workspace/
