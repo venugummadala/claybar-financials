@@ -1,0 +1,95 @@
+server:
+  port: 8080
+  shutdown: graceful
+
+spring:
+  application:
+    name: orchestrator-service
+  datasource:
+    url: jdbc:h2:mem:camunda;DB_CLOSE_ON_EXIT=FALSE
+    username: sa
+    password: ""
+  kafka:
+    bootstrap-servers: ${KAFKA_BOOTSTRAP_SERVERS:localhost:9092}
+    consumer:
+      auto-offset-reset: earliest
+      properties:
+        max.poll.interval.ms: 300000
+    producer:
+      acks: all
+      properties:
+        enable.idempotence: true
+        linger.ms: 5
+  lifecycle:
+    timeout-per-shutdown-phase: 30s
+
+camunda:
+  bpm:
+    admin-user:
+      id: ${CAMUNDA_ADMIN_USER:admin}
+      password: ${CAMUNDA_ADMIN_PASSWORD:admin}
+      first-name: Claybar
+      last-name: Admin
+    filter:
+      create: All tasks
+    history-level: full
+    default-serialization-format: application/json
+    database:
+      schema-update: true
+    job-execution:
+      enabled: true
+      deployment-aware: true
+    generic-properties:
+      properties:
+        # Never let a process variable be a Java-serialised object (security + upgrade safety).
+        javaSerializationFormatEnabled: false
+        enforceHistoryTimeToLive: true
+        historyCleanupBatchWindowStartTime: "01:00"
+        historyCleanupBatchWindowEndTime: "05:00"
+
+claybar:
+  kafka:
+    service-name: orchestrator-service
+  workflow:
+    inbound-topics: claybar.loan.applications,claybar.kyc.events,claybar.credit.events
+    start-events: LoanApplicationSubmitted
+    lifecycle-events:
+      enabled: true
+  loan:
+    sla:
+      kyc-timeout: PT10M
+      credit-timeout: PT10M
+      underwriting-sla: P2D
+  demo:
+    seed-identities: true
+
+management:
+  endpoints:
+    web:
+      exposure:
+        include: health,info,prometheus,metrics
+  endpoint:
+    health:
+      probes:
+        enabled: true
+  metrics:
+    tags:
+      application: ${spring.application.name}
+
+logging:
+  pattern:
+    level: "%5p [${spring.application.name},%X{correlationId:-}]"
+---
+spring:
+  config:
+    activate:
+      on-profile: postgres
+  datasource:
+    url: ${DB_URL:jdbc:postgresql://localhost:5432/camunda}
+    username: ${DB_USER:camunda}
+    password: ${DB_PASSWORD:camunda}
+    hikari:
+      maximum-pool-size: 20
+claybar:
+  kafka:
+    replication-factor: 1

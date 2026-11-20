@@ -1,0 +1,76 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  Claybar Financials - loan risk assessment.
+  Hit policy FIRST: rules are evaluated top-down, hard rejects and SLA timeouts win over approvals.
+  Owned by Credit Risk; changes are deployable without touching Java code.
+-->
+<definitions xmlns="https://www.omg.org/spec/DMN/20191111/MODEL/"
+             xmlns:camunda="http://camunda.org/schema/1.0/dmn"
+             xmlns:dmndi="https://www.omg.org/spec/DMN/20191111/DMNDI/"
+             xmlns:dc="http://www.omg.org/spec/DMN/20180521/DC/"
+             id="Definitions_LoanRisk" name="Loan risk" namespace="https://claybar.com/dmn/loan-risk">
+  <decision id="loan-risk-assessment" name="Loan risk assessment" camunda:historyTimeToLive="P180D">
+    <decisionTable id="DecisionTable_LoanRisk" hitPolicy="FIRST">
+      <input id="Input_KycStatus" label="KYC status" camunda:inputVariable="input">
+        <inputExpression id="Input_KycStatus_expr" typeRef="string"><text>kycStatus</text></inputExpression>
+      </input>
+      <input id="Input_CreditStatus" label="Credit check status" camunda:inputVariable="input">
+        <inputExpression id="Input_CreditStatus_expr" typeRef="string"><text>creditStatus</text></inputExpression>
+      </input>
+      <input id="Input_CreditScore" label="Credit score" camunda:inputVariable="input">
+        <inputExpression id="Input_CreditScore_expr" typeRef="integer"><text>creditScore</text></inputExpression>
+      </input>
+      <input id="Input_LoanToIncome" label="Loan-to-income ratio" camunda:inputVariable="input">
+        <inputExpression id="Input_LoanToIncome_expr" typeRef="double"><text>if annualIncome &gt; 0 then loanAmount / annualIncome else 99</text></inputExpression>
+      </input>
+      <input id="Input_LoanAmount" label="Loan amount" camunda:inputVariable="input">
+        <inputExpression id="Input_LoanAmount_expr" typeRef="double"><text>loanAmount</text></inputExpression>
+      </input>
+      <output id="Output_Decision" label="Decision" name="riskDecision" typeRef="string">
+        <outputValues id="Output_Decision_values"><text>"APPROVE","REVIEW","REJECT"</text></outputValues>
+      </output>
+      <rule id="Rule_1">
+        <description>KYC failed (sanctions / identity mismatch)</description>
+        <inputEntry id="R1_in0"><text>"FAILED"</text></inputEntry><inputEntry id="R1_in1"><text>-</text></inputEntry><inputEntry id="R1_in2"><text>-</text></inputEntry><inputEntry id="R1_in3"><text>-</text></inputEntry><inputEntry id="R1_in4"><text>-</text></inputEntry>
+        <outputEntry id="R1_out"><text>"REJECT"</text></outputEntry>
+      </rule>
+      <rule id="Rule_2">
+        <description>KYC provider did not answer within SLA</description>
+        <inputEntry id="R2_in0"><text>"TIMEOUT"</text></inputEntry><inputEntry id="R2_in1"><text>-</text></inputEntry><inputEntry id="R2_in2"><text>-</text></inputEntry><inputEntry id="R2_in3"><text>-</text></inputEntry><inputEntry id="R2_in4"><text>-</text></inputEntry>
+        <outputEntry id="R2_out"><text>"REVIEW"</text></outputEntry>
+      </rule>
+      <rule id="Rule_3">
+        <description>Credit bureau did not answer within SLA</description>
+        <inputEntry id="R3_in0"><text>-</text></inputEntry><inputEntry id="R3_in1"><text>"TIMEOUT"</text></inputEntry><inputEntry id="R3_in2"><text>-</text></inputEntry><inputEntry id="R3_in3"><text>-</text></inputEntry><inputEntry id="R3_in4"><text>-</text></inputEntry>
+        <outputEntry id="R3_out"><text>"REVIEW"</text></outputEntry>
+      </rule>
+      <rule id="Rule_4">
+        <description>Sub-prime credit score</description>
+        <inputEntry id="R4_in0"><text>-</text></inputEntry><inputEntry id="R4_in1"><text>-</text></inputEntry><inputEntry id="R4_in2"><text>&lt; 550</text></inputEntry><inputEntry id="R4_in3"><text>-</text></inputEntry><inputEntry id="R4_in4"><text>-</text></inputEntry>
+        <outputEntry id="R4_out"><text>"REJECT"</text></outputEntry>
+      </rule>
+      <rule id="Rule_5">
+        <description>Loan exceeds annual income</description>
+        <inputEntry id="R5_in0"><text>-</text></inputEntry><inputEntry id="R5_in1"><text>-</text></inputEntry><inputEntry id="R5_in2"><text>-</text></inputEntry><inputEntry id="R5_in3"><text>&gt; 1.0</text></inputEntry><inputEntry id="R5_in4"><text>-</text></inputEntry>
+        <outputEntry id="R5_out"><text>"REJECT"</text></outputEntry>
+      </rule>
+      <rule id="Rule_6">
+        <description>Prime applicant, affordable amount within auto-approval limit</description>
+        <inputEntry id="R6_in0"><text>"VERIFIED"</text></inputEntry><inputEntry id="R6_in1"><text>"COMPLETED"</text></inputEntry><inputEntry id="R6_in2"><text>&gt;= 700</text></inputEntry><inputEntry id="R6_in3"><text>&lt;= 0.4</text></inputEntry><inputEntry id="R6_in4"><text>&lt;= 50000</text></inputEntry>
+        <outputEntry id="R6_out"><text>"APPROVE"</text></outputEntry>
+      </rule>
+      <rule id="Rule_7">
+        <description>Everything else goes to an underwriter</description>
+        <inputEntry id="R7_in0"><text>-</text></inputEntry><inputEntry id="R7_in1"><text>-</text></inputEntry><inputEntry id="R7_in2"><text>-</text></inputEntry><inputEntry id="R7_in3"><text>-</text></inputEntry><inputEntry id="R7_in4"><text>-</text></inputEntry>
+        <outputEntry id="R7_out"><text>"REVIEW"</text></outputEntry>
+      </rule>
+    </decisionTable>
+  </decision>
+  <dmndi:DMNDI>
+    <dmndi:DMNDiagram id="DMNDiagram_LoanRisk">
+      <dmndi:DMNShape id="DMNShape_LoanRisk" dmnElementRef="loan-risk-assessment">
+        <dc:Bounds height="80" width="180" x="160" y="100" />
+      </dmndi:DMNShape>
+    </dmndi:DMNDiagram>
+  </dmndi:DMNDI>
+</definitions>

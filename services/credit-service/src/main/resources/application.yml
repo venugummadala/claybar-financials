@@ -1,0 +1,42 @@
+server:
+  port: 8083
+  shutdown: graceful
+
+spring:
+  application:
+    name: credit-service
+  kafka:
+    bootstrap-servers: ${KAFKA_BOOTSTRAP_SERVERS:localhost:9092}
+    consumer:
+      group-id: credit-service
+      auto-offset-reset: earliest
+    producer:
+      acks: all
+      properties:
+        enable.idempotence: true
+    listener:
+      concurrency: 3
+
+claybar:
+  kafka:
+    service-name: credit-service
+  credit:
+    # Simulated bureau latency, useful for demonstrating BPMN SLA timers.
+    simulated-latency: 0ms
+
+management:
+  endpoints:
+    web:
+      exposure:
+        include: health,info,prometheus,metrics
+  endpoint:
+    health:
+      probes:
+        enabled: true
+  metrics:
+    tags:
+      application: ${spring.application.name}
+
+logging:
+  pattern:
+    level: "%5p [${spring.application.name},%X{correlationId:-}]"

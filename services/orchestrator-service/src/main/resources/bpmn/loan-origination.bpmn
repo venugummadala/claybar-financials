@@ -1,0 +1,464 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  Claybar Financials - Loan origination.
+  Orchestrates KYC and credit-bureau checks in parallel over Kafka, applies the loan-risk DMN,
+  routes borderline cases to manual underwriting and publishes the decision.
+  Every Kafka interaction uses the claybar-workflow plug-in (kafkaCommandDelegate + message correlation).
+-->
+<bpmn:definitions xmlns:bpmn="http://www.omg.org/spec/BPMN/20100524/MODEL" xmlns:bpmndi="http://www.omg.org/spec/BPMN/20100524/DI" xmlns:dc="http://www.omg.org/spec/DD/20100524/DC" xmlns:di="http://www.omg.org/spec/DD/20100524/DI" xmlns:camunda="http://camunda.org/schema/1.0/bpmn" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xmlns:modeler="http://camunda.org/schema/modeler/1.0" id="Definitions_LoanOrigination" targetNamespace="https://claybar.com/bpmn/loan-origination" exporter="claybar-financials" exporterVersion="1.0" modeler:executionPlatform="Camunda Platform" modeler:executionPlatformVersion="7.22.0">
+  <bpmn:message id="Msg_LoanApplicationSubmitted" name="LoanApplicationSubmitted"/>
+  <bpmn:message id="Msg_KycCompleted" name="KycCompleted"/>
+  <bpmn:message id="Msg_CreditCheckCompleted" name="CreditCheckCompleted"/>
+  <bpmn:process id="loan-origination" name="Loan origination" isExecutable="true" camunda:historyTimeToLive="P180D">
+    <bpmn:startEvent id="Start_LoanSubmitted" name="Loan application submitted">
+      <bpmn:outgoing>Flow_Start</bpmn:outgoing>
+      <bpmn:messageEventDefinition id="Med_Start" messageRef="Msg_LoanApplicationSubmitted"/>
+    </bpmn:startEvent>
+    <bpmn:parallelGateway id="Gateway_Fork">
+      <bpmn:incoming>Flow_Start</bpmn:incoming>
+      <bpmn:outgoing>Flow_ForkKyc</bpmn:outgoing>
+      <bpmn:outgoing>Flow_ForkCredit</bpmn:outgoing>
+    </bpmn:parallelGateway>
+    <bpmn:sendTask id="Task_RequestKyc" name="Request KYC check" camunda:asyncBefore="true" camunda:delegateExpression="${kafkaCommandDelegate}">
+      <bpmn:extensionElements>
+        <camunda:inputOutput>
+          <camunda:inputParameter name="topic">claybar.kyc.commands</camunda:inputParameter>
+          <camunda:inputParameter name="eventType">KycRequested</camunda:inputParameter>
+          <camunda:inputParameter name="payloadVariables">applicantName,nationalId,email,dateOfBirth</camunda:inputParameter>
+        </camunda:inputOutput>
+      </bpmn:extensionElements>
+      <bpmn:incoming>Flow_ForkKyc</bpmn:incoming>
+      <bpmn:outgoing>Flow_KycSent</bpmn:outgoing>
+    </bpmn:sendTask>
+    <bpmn:receiveTask id="Task_AwaitKyc" name="Await KYC result" messageRef="Msg_KycCompleted" camunda:asyncAfter="true">
+      <bpmn:incoming>Flow_KycSent</bpmn:incoming>
+      <bpmn:outgoing>Flow_KycReceived</bpmn:outgoing>
+    </bpmn:receiveTask>
+    <bpmn:boundaryEvent id="Timer_KycTimeout" name="KYC SLA exceeded" attachedToRef="Task_AwaitKyc" cancelActivity="true">
+      <bpmn:outgoing>Flow_KycTimeout</bpmn:outgoing>
+      <bpmn:timerEventDefinition id="Ted_Kyc">
+        <bpmn:timeDuration xsi:type="bpmn:tFormalExpression">${loanSla.kycTimeout}</bpmn:timeDuration>
+      </bpmn:timerEventDefinition>
+    </bpmn:boundaryEvent>
+    <bpmn:serviceTask id="Task_KycTimedOut" name="Mark KYC timed out" camunda:expression="${true}">
+      <bpmn:extensionElements>
+        <camunda:inputOutput>
+          <camunda:outputParameter name="kycStatus">TIMEOUT</camunda:outputParameter>
+          <camunda:outputParameter name="kycReason">No KYC response within SLA</camunda:outputParameter>
+        </camunda:inputOutput>
+      </bpmn:extensionElements>
+      <bpmn:incoming>Flow_KycTimeout</bpmn:incoming>
+      <bpmn:outgoing>Flow_KycTimedOut</bpmn:outgoing>
+    </bpmn:serviceTask>
+    <bpmn:exclusiveGateway id="Gateway_KycMerge">
+      <bpmn:incoming>Flow_KycReceived</bpmn:incoming>
+      <bpmn:incoming>Flow_KycTimedOut</bpmn:incoming>
+      <bpmn:outgoing>Flow_KycDone</bpmn:outgoing>
+    </bpmn:exclusiveGateway>
+    <bpmn:sendTask id="Task_RequestCredit" name="Request credit check" camunda:asyncBefore="true" camunda:delegateExpression="${kafkaCommandDelegate}">
+      <bpmn:extensionElements>
+        <camunda:inputOutput>
+          <camunda:inputParameter name="topic">claybar.credit.commands</camunda:inputParameter>
+          <camunda:inputParameter name="eventType">CreditCheckRequested</camunda:inputParameter>
+          <camunda:inputParameter name="payloadVariables">applicantName,nationalId,annualIncome,loanAmount,termMonths</camunda:inputParameter>
+        </camunda:inputOutput>
+      </bpmn:extensionElements>
+      <bpmn:incoming>Flow_ForkCredit</bpmn:incoming>
+      <bpmn:outgoing>Flow_CreditSent</bpmn:outgoing>
+    </bpmn:sendTask>
+    <bpmn:receiveTask id="Task_AwaitCredit" name="Await credit result" messageRef="Msg_CreditCheckCompleted" camunda:asyncAfter="true">
+      <bpmn:incoming>Flow_CreditSent</bpmn:incoming>
+      <bpmn:outgoing>Flow_CreditReceived</bpmn:outgoing>
+    </bpmn:receiveTask>
+    <bpmn:boundaryEvent id="Timer_CreditTimeout" name="Bureau SLA exceeded" attachedToRef="Task_AwaitCredit" cancelActivity="true">
+      <bpmn:outgoing>Flow_CreditTimeout</bpmn:outgoing>
+      <bpmn:timerEventDefinition id="Ted_Credit">
+        <bpmn:timeDuration xsi:type="bpmn:tFormalExpression">${loanSla.creditTimeout}</bpmn:timeDuration>
+      </bpmn:timerEventDefinition>
+    </bpmn:boundaryEvent>
+    <bpmn:serviceTask id="Task_CreditTimedOut" name="Mark credit check timed out" camunda:expression="${true}">
+      <bpmn:extensionElements>
+        <camunda:inputOutput>
+          <camunda:outputParameter name="creditStatus">TIMEOUT</camunda:outputParameter>
+          <camunda:outputParameter name="creditScore">${0}</camunda:outputParameter>
+        </camunda:inputOutput>
+      </bpmn:extensionElements>
+      <bpmn:incoming>Flow_CreditTimeout</bpmn:incoming>
+      <bpmn:outgoing>Flow_CreditTimedOut</bpmn:outgoing>
+    </bpmn:serviceTask>
+    <bpmn:exclusiveGateway id="Gateway_CreditMerge">
+      <bpmn:incoming>Flow_CreditReceived</bpmn:incoming>
+      <bpmn:incoming>Flow_CreditTimedOut</bpmn:incoming>
+      <bpmn:outgoing>Flow_CreditDone</bpmn:outgoing>
+    </bpmn:exclusiveGateway>
+    <bpmn:parallelGateway id="Gateway_Join">
+      <bpmn:incoming>Flow_KycDone</bpmn:incoming>
+      <bpmn:incoming>Flow_CreditDone</bpmn:incoming>
+      <bpmn:outgoing>Flow_Joined</bpmn:outgoing>
+    </bpmn:parallelGateway>
+    <bpmn:businessRuleTask id="Task_AssessRisk" name="Assess loan risk" camunda:decisionRef="loan-risk-assessment" camunda:resultVariable="riskDecision" camunda:mapDecisionResult="singleEntry">
+      <bpmn:incoming>Flow_Joined</bpmn:incoming>
+      <bpmn:outgoing>Flow_Assessed</bpmn:outgoing>
+    </bpmn:businessRuleTask>
+    <bpmn:exclusiveGateway id="Gateway_RiskDecision" name="Risk decision?">
+      <bpmn:incoming>Flow_Assessed</bpmn:incoming>
+      <bpmn:outgoing>Flow_AutoApprove</bpmn:outgoing>
+      <bpmn:outgoing>Flow_Review</bpmn:outgoing>
+      <bpmn:outgoing>Flow_AutoReject</bpmn:outgoing>
+    </bpmn:exclusiveGateway>
+    <bpmn:sendTask id="Task_NotifyUnderReview" name="Publish loan under review" camunda:asyncBefore="true" camunda:delegateExpression="${kafkaCommandDelegate}">
+      <bpmn:extensionElements>
+        <camunda:inputOutput>
+          <camunda:inputParameter name="topic">claybar.loan.decisions</camunda:inputParameter>
+          <camunda:inputParameter name="eventType">LoanUnderReview</camunda:inputParameter>
+          <camunda:inputParameter name="payloadVariables">riskDecision,creditScore,kycStatus</camunda:inputParameter>
+        </camunda:inputOutput>
+      </bpmn:extensionElements>
+      <bpmn:incoming>Flow_Review</bpmn:incoming>
+      <bpmn:outgoing>Flow_ToUnderwriting</bpmn:outgoing>
+    </bpmn:sendTask>
+    <bpmn:userTask id="UserTask_Underwrite" name="Manual underwriting" camunda:candidateGroups="underwriters" camunda:dueDate="${loanSla.underwritingDueDate()}">
+      <bpmn:extensionElements>
+        <camunda:formData>
+          <camunda:formField id="underwritingApproved" label="Approve loan?" type="boolean">
+            <camunda:validation>
+              <camunda:constraint name="required"/>
+            </camunda:validation>
+          </camunda:formField>
+          <camunda:formField id="underwriterComment" label="Comment" type="string"/>
+        </camunda:formData>
+      </bpmn:extensionElements>
+      <bpmn:incoming>Flow_ToUnderwriting</bpmn:incoming>
+      <bpmn:outgoing>Flow_Underwritten</bpmn:outgoing>
+    </bpmn:userTask>
+    <bpmn:boundaryEvent id="Timer_UnderwritingSla" name="Underwriting SLA breached" attachedToRef="UserTask_Underwrite" cancelActivity="false">
+      <bpmn:outgoing>Flow_SlaBreached</bpmn:outgoing>
+      <bpmn:timerEventDefinition id="Ted_Uw">
+        <bpmn:timeDuration xsi:type="bpmn:tFormalExpression">${loanSla.underwritingSla}</bpmn:timeDuration>
+      </bpmn:timerEventDefinition>
+    </bpmn:boundaryEvent>
+    <bpmn:sendTask id="Task_EscalateSla" name="Publish SLA breach" camunda:asyncBefore="true" camunda:delegateExpression="${kafkaCommandDelegate}">
+      <bpmn:extensionElements>
+        <camunda:inputOutput>
+          <camunda:inputParameter name="topic">claybar.loan.decisions</camunda:inputParameter>
+          <camunda:inputParameter name="eventType">UnderwritingSlaBreached</camunda:inputParameter>
+          <camunda:inputParameter name="payloadVariables">applicantName,loanAmount</camunda:inputParameter>
+        </camunda:inputOutput>
+      </bpmn:extensionElements>
+      <bpmn:incoming>Flow_SlaBreached</bpmn:incoming>
+      <bpmn:outgoing>Flow_Escalated</bpmn:outgoing>
+    </bpmn:sendTask>
+    <bpmn:endEvent id="End_Escalated" name="Escalated">
+      <bpmn:incoming>Flow_Escalated</bpmn:incoming>
+    </bpmn:endEvent>
+    <bpmn:exclusiveGateway id="Gateway_UwOutcome" name="Underwriter approved?">
+      <bpmn:incoming>Flow_Underwritten</bpmn:incoming>
+      <bpmn:outgoing>Flow_UwApproved</bpmn:outgoing>
+      <bpmn:outgoing>Flow_UwRejected</bpmn:outgoing>
+    </bpmn:exclusiveGateway>
+    <bpmn:sendTask id="Task_PublishApproved" name="Publish loan approved" camunda:asyncBefore="true" camunda:delegateExpression="${kafkaCommandDelegate}">
+      <bpmn:extensionElements>
+        <camunda:inputOutput>
+          <camunda:inputParameter name="topic">claybar.loan.decisions</camunda:inputParameter>
+          <camunda:inputParameter name="eventType">LoanApproved</camunda:inputParameter>
+          <camunda:inputParameter name="payloadVariables">applicantName,email,loanAmount,termMonths,creditScore,riskDecision,underwriterComment</camunda:inputParameter>
+        </camunda:inputOutput>
+      </bpmn:extensionElements>
+      <bpmn:incoming>Flow_AutoApprove</bpmn:incoming>
+      <bpmn:incoming>Flow_UwApproved</bpmn:incoming>
+      <bpmn:outgoing>Flow_Approved</bpmn:outgoing>
+    </bpmn:sendTask>
+    <bpmn:endEvent id="End_Approved" name="Loan approved">
+      <bpmn:incoming>Flow_Approved</bpmn:incoming>
+    </bpmn:endEvent>
+    <bpmn:sendTask id="Task_PublishRejected" name="Publish loan rejected" camunda:asyncBefore="true" camunda:delegateExpression="${kafkaCommandDelegate}">
+      <bpmn:extensionElements>
+        <camunda:inputOutput>
+          <camunda:inputParameter name="topic">claybar.loan.decisions</camunda:inputParameter>
+          <camunda:inputParameter name="eventType">LoanRejected</camunda:inputParameter>
+          <camunda:inputParameter name="payloadVariables">applicantName,email,loanAmount,creditScore,kycStatus,kycReason,riskDecision,underwriterComment</camunda:inputParameter>
+        </camunda:inputOutput>
+      </bpmn:extensionElements>
+      <bpmn:incoming>Flow_AutoReject</bpmn:incoming>
+      <bpmn:incoming>Flow_UwRejected</bpmn:incoming>
+      <bpmn:outgoing>Flow_Rejected</bpmn:outgoing>
+    </bpmn:sendTask>
+    <bpmn:endEvent id="End_Rejected" name="Loan rejected">
+      <bpmn:incoming>Flow_Rejected</bpmn:incoming>
+    </bpmn:endEvent>
+    <bpmn:sequenceFlow id="Flow_Start" sourceRef="Start_LoanSubmitted" targetRef="Gateway_Fork"/>
+    <bpmn:sequenceFlow id="Flow_ForkKyc" sourceRef="Gateway_Fork" targetRef="Task_RequestKyc"/>
+    <bpmn:sequenceFlow id="Flow_ForkCredit" sourceRef="Gateway_Fork" targetRef="Task_RequestCredit"/>
+    <bpmn:sequenceFlow id="Flow_KycSent" sourceRef="Task_RequestKyc" targetRef="Task_AwaitKyc"/>
+    <bpmn:sequenceFlow id="Flow_KycReceived" sourceRef="Task_AwaitKyc" targetRef="Gateway_KycMerge"/>
+    <bpmn:sequenceFlow id="Flow_KycTimeout" sourceRef="Timer_KycTimeout" targetRef="Task_KycTimedOut"/>
+    <bpmn:sequenceFlow id="Flow_KycTimedOut" sourceRef="Task_KycTimedOut" targetRef="Gateway_KycMerge"/>
+    <bpmn:sequenceFlow id="Flow_KycDone" sourceRef="Gateway_KycMerge" targetRef="Gateway_Join"/>
+    <bpmn:sequenceFlow id="Flow_CreditSent" sourceRef="Task_RequestCredit" targetRef="Task_AwaitCredit"/>
+    <bpmn:sequenceFlow id="Flow_CreditReceived" sourceRef="Task_AwaitCredit" targetRef="Gateway_CreditMerge"/>
+    <bpmn:sequenceFlow id="Flow_CreditTimeout" sourceRef="Timer_CreditTimeout" targetRef="Task_CreditTimedOut"/>
+    <bpmn:sequenceFlow id="Flow_CreditTimedOut" sourceRef="Task_CreditTimedOut" targetRef="Gateway_CreditMerge"/>
+    <bpmn:sequenceFlow id="Flow_CreditDone" sourceRef="Gateway_CreditMerge" targetRef="Gateway_Join"/>
+    <bpmn:sequenceFlow id="Flow_Joined" sourceRef="Gateway_Join" targetRef="Task_AssessRisk"/>
+    <bpmn:sequenceFlow id="Flow_Assessed" sourceRef="Task_AssessRisk" targetRef="Gateway_RiskDecision"/>
+    <bpmn:sequenceFlow id="Flow_AutoApprove" name="Approve" sourceRef="Gateway_RiskDecision" targetRef="Task_PublishApproved">
+      <bpmn:conditionExpression xsi:type="bpmn:tFormalExpression">${riskDecision == 'APPROVE'}</bpmn:conditionExpression>
+    </bpmn:sequenceFlow>
+    <bpmn:sequenceFlow id="Flow_Review" name="Review" sourceRef="Gateway_RiskDecision" targetRef="Task_NotifyUnderReview">
+      <bpmn:conditionExpression xsi:type="bpmn:tFormalExpression">${riskDecision == 'REVIEW'}</bpmn:conditionExpression>
+    </bpmn:sequenceFlow>
+    <bpmn:sequenceFlow id="Flow_AutoReject" name="Reject" sourceRef="Gateway_RiskDecision" targetRef="Task_PublishRejected">
+      <bpmn:conditionExpression xsi:type="bpmn:tFormalExpression">${riskDecision == 'REJECT'}</bpmn:conditionExpression>
+    </bpmn:sequenceFlow>
+    <bpmn:sequenceFlow id="Flow_ToUnderwriting" sourceRef="Task_NotifyUnderReview" targetRef="UserTask_Underwrite"/>
+    <bpmn:sequenceFlow id="Flow_Underwritten" sourceRef="UserTask_Underwrite" targetRef="Gateway_UwOutcome"/>
+    <bpmn:sequenceFlow id="Flow_UwApproved" name="Yes" sourceRef="Gateway_UwOutcome" targetRef="Task_PublishApproved">
+      <bpmn:conditionExpression xsi:type="bpmn:tFormalExpression">${underwritingApproved}</bpmn:conditionExpression>
+    </bpmn:sequenceFlow>
+    <bpmn:sequenceFlow id="Flow_UwRejected" name="No" sourceRef="Gateway_UwOutcome" targetRef="Task_PublishRejected">
+      <bpmn:conditionExpression xsi:type="bpmn:tFormalExpression">${!underwritingApproved}</bpmn:conditionExpression>
+    </bpmn:sequenceFlow>
+    <bpmn:sequenceFlow id="Flow_SlaBreached" sourceRef="Timer_UnderwritingSla" targetRef="Task_EscalateSla"/>
+    <bpmn:sequenceFlow id="Flow_Escalated" sourceRef="Task_EscalateSla" targetRef="End_Escalated"/>
+    <bpmn:sequenceFlow id="Flow_Approved" sourceRef="Task_PublishApproved" targetRef="End_Approved"/>
+    <bpmn:sequenceFlow id="Flow_Rejected" sourceRef="Task_PublishRejected" targetRef="End_Rejected"/>
+  </bpmn:process>
+  <bpmndi:BPMNDiagram id="Diagram_LoanOrigination">
+    <bpmndi:BPMNPlane id="Plane_LoanOrigination" bpmnElement="loan-origination">
+      <bpmndi:BPMNShape id="Start_LoanSubmitted_di" bpmnElement="Start_LoanSubmitted">
+        <dc:Bounds x="150" y="342" width="36" height="36"/>
+        <bpmndi:BPMNLabel>
+          <dc:Bounds x="120" y="382" width="96" height="27"/>
+        </bpmndi:BPMNLabel>
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="Gateway_Fork_di" bpmnElement="Gateway_Fork">
+        <dc:Bounds x="240" y="335" width="50" height="50"/>
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="Task_RequestKyc_di" bpmnElement="Task_RequestKyc">
+        <dc:Bounds x="340" y="160" width="100" height="80"/>
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="Task_AwaitKyc_di" bpmnElement="Task_AwaitKyc">
+        <dc:Bounds x="500" y="160" width="100" height="80"/>
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="Timer_KycTimeout_di" bpmnElement="Timer_KycTimeout">
+        <dc:Bounds x="532" y="142" width="36" height="36"/>
+        <bpmndi:BPMNLabel>
+          <dc:Bounds x="572" y="111" width="96" height="27"/>
+        </bpmndi:BPMNLabel>
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="Task_KycTimedOut_di" bpmnElement="Task_KycTimedOut">
+        <dc:Bounds x="620" y="50" width="100" height="80"/>
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="Gateway_KycMerge_di" bpmnElement="Gateway_KycMerge" isMarkerVisible="true">
+        <dc:Bounds x="755" y="175" width="50" height="50"/>
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="Task_RequestCredit_di" bpmnElement="Task_RequestCredit">
+        <dc:Bounds x="340" y="480" width="100" height="80"/>
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="Task_AwaitCredit_di" bpmnElement="Task_AwaitCredit">
+        <dc:Bounds x="500" y="480" width="100" height="80"/>
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="Timer_CreditTimeout_di" bpmnElement="Timer_CreditTimeout">
+        <dc:Bounds x="532" y="542" width="36" height="36"/>
+        <bpmndi:BPMNLabel>
+          <dc:Bounds x="502" y="582" width="96" height="27"/>
+        </bpmndi:BPMNLabel>
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="Task_CreditTimedOut_di" bpmnElement="Task_CreditTimedOut">
+        <dc:Bounds x="620" y="590" width="100" height="80"/>
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="Gateway_CreditMerge_di" bpmnElement="Gateway_CreditMerge" isMarkerVisible="true">
+        <dc:Bounds x="755" y="495" width="50" height="50"/>
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="Gateway_Join_di" bpmnElement="Gateway_Join">
+        <dc:Bounds x="855" y="335" width="50" height="50"/>
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="Task_AssessRisk_di" bpmnElement="Task_AssessRisk">
+        <dc:Bounds x="950" y="320" width="100" height="80"/>
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="Gateway_RiskDecision_di" bpmnElement="Gateway_RiskDecision" isMarkerVisible="true">
+        <dc:Bounds x="1105" y="335" width="50" height="50"/>
+        <bpmndi:BPMNLabel>
+          <dc:Bounds x="1075" y="389" width="110" height="27"/>
+        </bpmndi:BPMNLabel>
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="Task_NotifyUnderReview_di" bpmnElement="Task_NotifyUnderReview">
+        <dc:Bounds x="1200" y="320" width="100" height="80"/>
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="UserTask_Underwrite_di" bpmnElement="UserTask_Underwrite">
+        <dc:Bounds x="1340" y="320" width="100" height="80"/>
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="Timer_UnderwritingSla_di" bpmnElement="Timer_UnderwritingSla">
+        <dc:Bounds x="1372" y="382" width="36" height="36"/>
+        <bpmndi:BPMNLabel>
+          <dc:Bounds x="1342" y="422" width="96" height="27"/>
+        </bpmndi:BPMNLabel>
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="Task_EscalateSla_di" bpmnElement="Task_EscalateSla">
+        <dc:Bounds x="1450" y="450" width="100" height="80"/>
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="End_Escalated_di" bpmnElement="End_Escalated">
+        <dc:Bounds x="1622" y="472" width="36" height="36"/>
+        <bpmndi:BPMNLabel>
+          <dc:Bounds x="1592" y="512" width="96" height="27"/>
+        </bpmndi:BPMNLabel>
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="Gateway_UwOutcome_di" bpmnElement="Gateway_UwOutcome" isMarkerVisible="true">
+        <dc:Bounds x="1495" y="335" width="50" height="50"/>
+        <bpmndi:BPMNLabel>
+          <dc:Bounds x="1465" y="389" width="110" height="27"/>
+        </bpmndi:BPMNLabel>
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="Task_PublishApproved_di" bpmnElement="Task_PublishApproved">
+        <dc:Bounds x="1630" y="160" width="100" height="80"/>
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="End_Approved_di" bpmnElement="End_Approved">
+        <dc:Bounds x="1802" y="182" width="36" height="36"/>
+        <bpmndi:BPMNLabel>
+          <dc:Bounds x="1772" y="222" width="96" height="27"/>
+        </bpmndi:BPMNLabel>
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="Task_PublishRejected_di" bpmnElement="Task_PublishRejected">
+        <dc:Bounds x="1630" y="640" width="100" height="80"/>
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="End_Rejected_di" bpmnElement="End_Rejected">
+        <dc:Bounds x="1802" y="662" width="36" height="36"/>
+        <bpmndi:BPMNLabel>
+          <dc:Bounds x="1772" y="702" width="96" height="27"/>
+        </bpmndi:BPMNLabel>
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNEdge id="Flow_Start_di" bpmnElement="Flow_Start">
+        <di:waypoint x="186" y="360"/>
+        <di:waypoint x="240" y="360"/>
+      </bpmndi:BPMNEdge>
+      <bpmndi:BPMNEdge id="Flow_ForkKyc_di" bpmnElement="Flow_ForkKyc">
+        <di:waypoint x="265" y="335"/>
+        <di:waypoint x="265" y="200"/>
+        <di:waypoint x="340" y="200"/>
+      </bpmndi:BPMNEdge>
+      <bpmndi:BPMNEdge id="Flow_ForkCredit_di" bpmnElement="Flow_ForkCredit">
+        <di:waypoint x="265" y="385"/>
+        <di:waypoint x="265" y="520"/>
+        <di:waypoint x="340" y="520"/>
+      </bpmndi:BPMNEdge>
+      <bpmndi:BPMNEdge id="Flow_KycSent_di" bpmnElement="Flow_KycSent">
+        <di:waypoint x="440" y="200"/>
+        <di:waypoint x="500" y="200"/>
+      </bpmndi:BPMNEdge>
+      <bpmndi:BPMNEdge id="Flow_KycReceived_di" bpmnElement="Flow_KycReceived">
+        <di:waypoint x="600" y="200"/>
+        <di:waypoint x="755" y="200"/>
+      </bpmndi:BPMNEdge>
+      <bpmndi:BPMNEdge id="Flow_KycTimeout_di" bpmnElement="Flow_KycTimeout">
+        <di:waypoint x="550" y="142"/>
+        <di:waypoint x="550" y="90"/>
+        <di:waypoint x="620" y="90"/>
+      </bpmndi:BPMNEdge>
+      <bpmndi:BPMNEdge id="Flow_KycTimedOut_di" bpmnElement="Flow_KycTimedOut">
+        <di:waypoint x="720" y="90"/>
+        <di:waypoint x="780" y="90"/>
+        <di:waypoint x="780" y="175"/>
+      </bpmndi:BPMNEdge>
+      <bpmndi:BPMNEdge id="Flow_KycDone_di" bpmnElement="Flow_KycDone">
+        <di:waypoint x="780" y="225"/>
+        <di:waypoint x="780" y="360"/>
+        <di:waypoint x="855" y="360"/>
+      </bpmndi:BPMNEdge>
+      <bpmndi:BPMNEdge id="Flow_CreditSent_di" bpmnElement="Flow_CreditSent">
+        <di:waypoint x="440" y="520"/>
+        <di:waypoint x="500" y="520"/>
+      </bpmndi:BPMNEdge>
+      <bpmndi:BPMNEdge id="Flow_CreditReceived_di" bpmnElement="Flow_CreditReceived">
+        <di:waypoint x="600" y="520"/>
+        <di:waypoint x="755" y="520"/>
+      </bpmndi:BPMNEdge>
+      <bpmndi:BPMNEdge id="Flow_CreditTimeout_di" bpmnElement="Flow_CreditTimeout">
+        <di:waypoint x="550" y="578"/>
+        <di:waypoint x="550" y="630"/>
+        <di:waypoint x="620" y="630"/>
+      </bpmndi:BPMNEdge>
+      <bpmndi:BPMNEdge id="Flow_CreditTimedOut_di" bpmnElement="Flow_CreditTimedOut">
+        <di:waypoint x="720" y="630"/>
+        <di:waypoint x="780" y="630"/>
+        <di:waypoint x="780" y="545"/>
+      </bpmndi:BPMNEdge>
+      <bpmndi:BPMNEdge id="Flow_CreditDone_di" bpmnElement="Flow_CreditDone">
+        <di:waypoint x="780" y="495"/>
+        <di:waypoint x="780" y="360"/>
+        <di:waypoint x="855" y="360"/>
+      </bpmndi:BPMNEdge>
+      <bpmndi:BPMNEdge id="Flow_Joined_di" bpmnElement="Flow_Joined">
+        <di:waypoint x="905" y="360"/>
+        <di:waypoint x="950" y="360"/>
+      </bpmndi:BPMNEdge>
+      <bpmndi:BPMNEdge id="Flow_Assessed_di" bpmnElement="Flow_Assessed">
+        <di:waypoint x="1050" y="360"/>
+        <di:waypoint x="1105" y="360"/>
+      </bpmndi:BPMNEdge>
+      <bpmndi:BPMNEdge id="Flow_AutoApprove_di" bpmnElement="Flow_AutoApprove">
+        <di:waypoint x="1130" y="335"/>
+        <di:waypoint x="1130" y="200"/>
+        <di:waypoint x="1630" y="200"/>
+        <bpmndi:BPMNLabel>
+          <dc:Bounds x="1136" y="180" width="60" height="14"/>
+        </bpmndi:BPMNLabel>
+      </bpmndi:BPMNEdge>
+      <bpmndi:BPMNEdge id="Flow_Review_di" bpmnElement="Flow_Review">
+        <di:waypoint x="1155" y="360"/>
+        <di:waypoint x="1200" y="360"/>
+        <bpmndi:BPMNLabel>
+          <dc:Bounds x="1161" y="340" width="60" height="14"/>
+        </bpmndi:BPMNLabel>
+      </bpmndi:BPMNEdge>
+      <bpmndi:BPMNEdge id="Flow_AutoReject_di" bpmnElement="Flow_AutoReject">
+        <di:waypoint x="1130" y="385"/>
+        <di:waypoint x="1130" y="680"/>
+        <di:waypoint x="1630" y="680"/>
+        <bpmndi:BPMNLabel>
+          <dc:Bounds x="1136" y="660" width="60" height="14"/>
+        </bpmndi:BPMNLabel>
+      </bpmndi:BPMNEdge>
+      <bpmndi:BPMNEdge id="Flow_ToUnderwriting_di" bpmnElement="Flow_ToUnderwriting">
+        <di:waypoint x="1300" y="360"/>
+        <di:waypoint x="1340" y="360"/>
+      </bpmndi:BPMNEdge>
+      <bpmndi:BPMNEdge id="Flow_Underwritten_di" bpmnElement="Flow_Underwritten">
+        <di:waypoint x="1440" y="360"/>
+        <di:waypoint x="1495" y="360"/>
+      </bpmndi:BPMNEdge>
+      <bpmndi:BPMNEdge id="Flow_UwApproved_di" bpmnElement="Flow_UwApproved">
+        <di:waypoint x="1520" y="335"/>
+        <di:waypoint x="1520" y="200"/>
+        <di:waypoint x="1630" y="200"/>
+        <bpmndi:BPMNLabel>
+          <dc:Bounds x="1526" y="180" width="60" height="14"/>
+        </bpmndi:BPMNLabel>
+      </bpmndi:BPMNEdge>
+      <bpmndi:BPMNEdge id="Flow_UwRejected_di" bpmnElement="Flow_UwRejected">
+        <di:waypoint x="1520" y="385"/>
+        <di:waypoint x="1520" y="680"/>
+        <di:waypoint x="1630" y="680"/>
+        <bpmndi:BPMNLabel>
+          <dc:Bounds x="1526" y="660" width="60" height="14"/>
+        </bpmndi:BPMNLabel>
+      </bpmndi:BPMNEdge>
+      <bpmndi:BPMNEdge id="Flow_SlaBreached_di" bpmnElement="Flow_SlaBreached">
+        <di:waypoint x="1390" y="418"/>
+        <di:waypoint x="1390" y="490"/>
+        <di:waypoint x="1450" y="490"/>
+      </bpmndi:BPMNEdge>
+      <bpmndi:BPMNEdge id="Flow_Escalated_di" bpmnElement="Flow_Escalated">
+        <di:waypoint x="1550" y="490"/>
+        <di:waypoint x="1622" y="490"/>
+      </bpmndi:BPMNEdge>
+      <bpmndi:BPMNEdge id="Flow_Approved_di" bpmnElement="Flow_Approved">
+        <di:waypoint x="1730" y="200"/>
+        <di:waypoint x="1802" y="200"/>
+      </bpmndi:BPMNEdge>
+      <bpmndi:BPMNEdge id="Flow_Rejected_di" bpmnElement="Flow_Rejected">
+        <di:waypoint x="1730" y="680"/>
+        <di:waypoint x="1802" y="680"/>
+      </bpmndi:BPMNEdge>
+    </bpmndi:BPMNPlane>
+  </bpmndi:BPMNDiagram>
+</bpmn:definitions>
